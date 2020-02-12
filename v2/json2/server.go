@@ -8,6 +8,7 @@ package json2
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/rpc/v2"
 )
@@ -134,7 +135,9 @@ type CodecRequest struct {
 // The method uses a dotted notation as in "Service.Method".
 func (c *CodecRequest) Method() (string, error) {
 	if c.err == nil {
-		return c.request.Method, nil
+		elem := strings.SplitN(c.request.Method, "_", 2)
+		fullName := elem[0] + "." + elem[1]
+		return fullName, nil
 	}
 	return "", c.err
 }
