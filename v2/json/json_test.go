@@ -14,7 +14,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/eoscanada/rpc/v2"
+	"github.com/gorilla/rpc/v2"
 )
 
 var (

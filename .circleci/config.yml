@@ -6,7 +6,7 @@ jobs:
   "test": &test
     docker:
       - image: circleci/golang:latest
-    working_directory: /go/src/github.com/eoscanada/rpc
+    working_directory: /go/src/github.com/gorilla/rpc
     steps: &steps
       - checkout
       - run: go version

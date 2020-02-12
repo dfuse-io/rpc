@@ -4,14 +4,14 @@
 // license that can be found in the LICENSE file.
 
 /*
-Package eoscanada/rpc/json provides a codec for JSON-RPC over HTTP services.
+Package gorilla/rpc/json provides a codec for JSON-RPC over HTTP services.
 
 To register the codec in a RPC server:
 
 	import (
 		"http"
-		"github.com/eoscanada/rpc/v2"
-		"github.com/eoscanada/rpc/v2/json"
+		"github.com/gorilla/rpc/v2"
+		"github.com/gorilla/rpc/v2/json"
 	)
 
 	func init() {
@@ -51,7 +51,7 @@ Response format is:
 	id:
 		The same id as the request it is responding to.
 
-Check the eoscanada/rpc documentation for more details:
+Check the gorilla/rpc documentation for more details:
 
 	http://gorilla-web.appspot.com/pkg/rpc
 */
