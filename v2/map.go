@@ -101,7 +101,9 @@ func (m *serviceMap) register(rcvr interface{}, name string) error {
 		if returnType := mtype.Out(0); returnType != typeOfError {
 			continue
 		}
-		s.methods[method.Name] = &serviceMethod{
+
+		// convert method name to lower case for use in Ethereum
+		s.methods[strings.ToLower(method.Name)] = &serviceMethod{
 			method:    method,
 			argsType:  args.Elem(),
 			replyType: reply.Elem(),

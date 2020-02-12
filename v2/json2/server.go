@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"errors"
 
 	"github.com/gorilla/rpc/v2"
 )
@@ -136,7 +137,11 @@ type CodecRequest struct {
 func (c *CodecRequest) Method() (string, error) {
 	if c.err == nil {
 		elem := strings.SplitN(c.request.Method, "_", 2)
-		fullName := elem[0] + "." + elem[1]
+		if len(elem) < 2 {
+			return "", errors.New("Method parsing error")
+		}
+		// convert full method name to lower case for retrieval in method map
+		fullName := strings.ToLower(elem[0] + "." + elem[1])
 		return fullName, nil
 	}
 	return "", c.err
