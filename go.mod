@@ -1,5 +1,3 @@
-module github.com/eoscanada/rpc
-
-replace github.com/gorilla/rpc => github.com/eoscanada/rpc
+module github.com/gorilla/rpc
 
 go 1.13

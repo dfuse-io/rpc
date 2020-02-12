@@ -14,7 +14,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/eoscanada/rpc"
+	"github.com/gorilla/rpc"
 )
 
 var ErrResponseError = errors.New("response error")
