@@ -169,7 +169,8 @@ func (c *CodecRequest) ReadRequest(args interface{}) error {
 			// fallback and attempt an unmarshal with JSON params as
 			// array value and RPC params is struct. Unmarshal into
 			// array containing the request struct.
-			params := [1]interface{}{args}
+			params := StructToFieldPointer(args)
+			
 			if err = json.Unmarshal(*c.request.Params, &params); err != nil {
 				c.err = &Error{
 					Code:    E_INVALID_REQ,
