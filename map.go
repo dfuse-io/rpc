@@ -143,7 +143,7 @@ func (m *serviceMap) register(rcvr interface{}, name string, passReq bool) error
 //
 // The method name uses a dotted notation as in "Service.Method".
 func (m *serviceMap) get(method string) (*service, *serviceMethod, error) {
-	parts := strings.Split(method, ".")
+	parts := strings.Split(method, MethodSeparator)
 	if len(parts) != 2 {
 		err := fmt.Errorf("rpc: service/method request ill-formed: %q", method)
 		return nil, nil, err

@@ -12,6 +12,8 @@ import (
 	"strings"
 )
 
+var MethodSeparator = "."
+
 // ----------------------------------------------------------------------------
 // Codec
 // ----------------------------------------------------------------------------
@@ -58,7 +60,7 @@ type Server struct {
 	codecs        map[string]Codec
 	services      *serviceMap
 	interceptFunc func(i *RequestInfo) *http.Request
-	beforeFunc    func(i *RequestInfo)
+	beforeFunc    func(i *RequestInfo, args interface{})
 	afterFunc     func(i *RequestInfo)
 }
 
@@ -137,7 +139,7 @@ func (s *Server) RegisterInterceptFunc(f func(i *RequestInfo) *http.Request) {
 //
 // Note: Only one function can be registered, subsequent calls to this
 // method will overwrite all the previous functions.
-func (s *Server) RegisterBeforeFunc(f func(i *RequestInfo)) {
+func (s *Server) RegisterBeforeFunc(f func(i *RequestInfo, args interface{})) {
 	s.beforeFunc = f
 }
 
@@ -207,7 +209,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.beforeFunc(&RequestInfo{
 			Request: r,
 			Method:  method,
-		})
+		}, args.Interface())
 	}
 
 	// Call the service method.

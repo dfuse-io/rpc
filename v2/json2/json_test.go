@@ -7,6 +7,7 @@ package json2
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -213,7 +214,7 @@ func TestServiceWithErrorMapper(t *testing.T) {
 	const mappedErrorCode = 100
 
 	// errorMapper maps ErrMappedResponseError to an Error with mappedErrorCode Code, everything else is returned as-is
-	errorMapper := func(err error) error {
+	errorMapper := func(ctx context.Context, err error) error {
 		if err == ErrMappedResponseError {
 			return &Error{
 				Code:    mappedErrorCode,
@@ -228,7 +229,7 @@ func TestServiceWithErrorMapper(t *testing.T) {
 	}
 
 	s := rpc.NewServer()
-	s.RegisterCodec(NewCustomCodecWithErrorMapper(rpc.DefaultEncoderSelector, errorMapper), "application/json")
+	s.RegisterCodec(NewCustomCodecWithErrorMapper(rpc.DefaultEncoderSelector, errorMapper, false), "application/json")
 	s.RegisterService(new(Service1), "")
 
 	var res Service1Response

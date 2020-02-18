@@ -6,6 +6,7 @@
 package json
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -129,7 +130,7 @@ func (c *CodecRequest) WriteResponse(w http.ResponseWriter, reply interface{}) {
 	}
 }
 
-func (c *CodecRequest) WriteError(w http.ResponseWriter, _ int, err error) {
+func (c *CodecRequest) WriteError(ctx context.Context, w http.ResponseWriter, _ int, err error) {
 	res := &serverResponse{
 		Result: &null,
 		Id:     c.request.Id,

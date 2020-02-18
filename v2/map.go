@@ -129,7 +129,7 @@ func (m *serviceMap) register(rcvr interface{}, name string) error {
 //
 // The method name uses a dotted notation as in "Service.Method".
 func (m *serviceMap) get(method string) (*service, *serviceMethod, error) {
-	parts := strings.Split(method, ".")
+	parts := strings.Split(method, MethodSeparator)
 	if len(parts) != 2 {
 		err := fmt.Errorf("rpc: service/method request ill-formed: %q", method)
 		return nil, nil, err
@@ -141,7 +141,8 @@ func (m *serviceMap) get(method string) (*service, *serviceMethod, error) {
 		err := fmt.Errorf("rpc: can't find service %q", method)
 		return nil, nil, err
 	}
-	serviceMethod := service.methods[parts[1]]
+
+	serviceMethod := service.methods[strings.ToLower(parts[1])]
 	if serviceMethod == nil {
 		err := fmt.Errorf("rpc: can't find method %q", method)
 		return nil, nil, err

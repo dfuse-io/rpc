@@ -111,7 +111,7 @@ func TestServiceBeforeAfter(t *testing.T) {
 	service.beforeAfterContext = map[string]string{}
 	s.RegisterService(service, "")
 
-	s.RegisterBeforeFunc(func(i *rpc.RequestInfo) {
+	s.RegisterBeforeFunc(func(i *rpc.RequestInfo, args interface{}) {
 		service.beforeAfterContext["before"] = "Before is true"
 	})
 	s.RegisterAfterFunc(func(i *rpc.RequestInfo) {

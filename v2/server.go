@@ -6,11 +6,14 @@
 package rpc
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
 )
+
+var MethodSeparator = "."
 
 var nilErrorValue = reflect.Zero(reflect.TypeOf((*error)(nil)).Elem())
 
@@ -33,7 +36,7 @@ type CodecRequest interface {
 	// Writes the response using the RPC method reply.
 	WriteResponse(http.ResponseWriter, interface{})
 	// Writes an error produced by the server.
-	WriteError(w http.ResponseWriter, status int, err error)
+	WriteError(ctx context.Context, w http.ResponseWriter, status int, err error)
 }
 
 // ----------------------------------------------------------------------------
@@ -61,7 +64,7 @@ type Server struct {
 	codecs        map[string]Codec
 	services      *serviceMap
 	interceptFunc func(i *RequestInfo) *http.Request
-	beforeFunc    func(i *RequestInfo)
+	beforeFunc    func(i *RequestInfo, args interface{})
 	afterFunc     func(i *RequestInfo)
 	validateFunc  reflect.Value
 }
@@ -90,7 +93,7 @@ func (s *Server) RegisterInterceptFunc(f func(i *RequestInfo) *http.Request) {
 //
 // Note: Only one function can be registered, subsequent calls to this
 // method will overwrite all the previous functions.
-func (s *Server) RegisterBeforeFunc(f func(i *RequestInfo)) {
+func (s *Server) RegisterBeforeFunc(f func(i *RequestInfo, args interface{})) {
 	s.beforeFunc = f
 }
 
@@ -170,18 +173,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Get service method to be called.
 	method, errMethod := codecReq.Method()
 	if errMethod != nil {
-		codecReq.WriteError(w, http.StatusBadRequest, errMethod)
+		codecReq.WriteError(r.Context(), w, http.StatusBadRequest, errMethod)
 		return
 	}
 	serviceSpec, methodSpec, errGet := s.services.get(method)
 	if errGet != nil {
-		codecReq.WriteError(w, http.StatusBadRequest, errGet)
+		codecReq.WriteError(r.Context(), w, http.StatusBadRequest, errGet)
 		return
 	}
 	// Decode the args.
 	args := reflect.New(methodSpec.argsType)
 	if errRead := codecReq.ReadRequest(args.Interface()); errRead != nil {
-		codecReq.WriteError(w, http.StatusBadRequest, errRead)
+		codecReq.WriteError(r.Context(), w, http.StatusBadRequest, errRead)
 		return
 	}
 
@@ -203,7 +206,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Call the registered Before Function
 	if s.beforeFunc != nil {
-		s.beforeFunc(requestInfo)
+		s.beforeFunc(requestInfo, args.Interface())
 	}
 
 	// Prepare the reply, we need it even if validation fails
@@ -242,7 +245,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if errResult == nil {
 		codecReq.WriteResponse(w, reply.Interface())
 	} else {
-		codecReq.WriteError(w, statusCode, errResult)
+		codecReq.WriteError(r.Context(), w, statusCode, errResult)
 	}
 
 	// Call the registered After Function

@@ -6,10 +6,9 @@
 package json2
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
-	"errors"
 
 	"github.com/gorilla/rpc/v2"
 )
@@ -72,10 +71,11 @@ func NewCustomCodec(encSel rpc.EncoderSelector) *Codec {
 // error as a param, replacing it by the value returned by this function. This function is intended
 // to decouple your service implementation from the codec itself, making possible to return abstract
 // errors in your service, and then mapping them here to the JSON-RPC error codes.
-func NewCustomCodecWithErrorMapper(encSel rpc.EncoderSelector, errorMapper func(error) error) *Codec {
+func NewCustomCodecWithErrorMapper(encSel rpc.EncoderSelector, errorMapper func(context.Context, error) error, mapAllErrors bool) *Codec {
 	return &Codec{
-		encSel:      encSel,
-		errorMapper: errorMapper,
+		encSel:       encSel,
+		errorMapper:  errorMapper,
+		mapAllErrors: mapAllErrors,
 	}
 }
 
@@ -86,13 +86,14 @@ func NewCodec() *Codec {
 
 // Codec creates a CodecRequest to process each request.
 type Codec struct {
-	encSel      rpc.EncoderSelector
-	errorMapper func(error) error
+	encSel       rpc.EncoderSelector
+	errorMapper  func(context.Context, error) error
+	mapAllErrors bool
 }
 
 // NewRequest returns a CodecRequest.
 func (c *Codec) NewRequest(r *http.Request) rpc.CodecRequest {
-	return newCodecRequest(r, c.encSel.Select(r), c.errorMapper)
+	return newCodecRequest(r, c.encSel.Select(r), c.errorMapper, c.mapAllErrors)
 }
 
 // ----------------------------------------------------------------------------
@@ -100,7 +101,7 @@ func (c *Codec) NewRequest(r *http.Request) rpc.CodecRequest {
 // ----------------------------------------------------------------------------
 
 // newCodecRequest returns a new CodecRequest.
-func newCodecRequest(r *http.Request, encoder rpc.Encoder, errorMapper func(error) error) rpc.CodecRequest {
+func newCodecRequest(r *http.Request, encoder rpc.Encoder, errorMapper func(context.Context, error) error, mapAllErrors bool) rpc.CodecRequest {
 	// Decode the request body and check if RPC method is valid.
 	req := new(serverRequest)
 	err := json.NewDecoder(r.Body).Decode(req)
@@ -120,15 +121,16 @@ func newCodecRequest(r *http.Request, encoder rpc.Encoder, errorMapper func(erro
 	}
 
 	r.Body.Close()
-	return &CodecRequest{request: req, err: err, encoder: encoder, errorMapper: errorMapper}
+	return &CodecRequest{request: req, err: err, encoder: encoder, errorMapper: errorMapper, mapAllErrors: mapAllErrors}
 }
 
 // CodecRequest decodes and encodes a single request.
 type CodecRequest struct {
-	request     *serverRequest
-	err         error
-	encoder     rpc.Encoder
-	errorMapper func(error) error
+	request      *serverRequest
+	err          error
+	encoder      rpc.Encoder
+	errorMapper  func(context.Context, error) error
+	mapAllErrors bool
 }
 
 // Method returns the RPC method for the current request.
@@ -136,13 +138,7 @@ type CodecRequest struct {
 // The method uses a dotted notation as in "Service.Method".
 func (c *CodecRequest) Method() (string, error) {
 	if c.err == nil {
-		elem := strings.SplitN(c.request.Method, "_", 2)
-		if len(elem) < 2 {
-			return "", errors.New("Method parsing error")
-		}
-		// convert full method name to lower case for retrieval in method map
-		fullName := strings.ToLower(elem[0] + "." + elem[1])
-		return fullName, nil
+		return c.request.Method, nil
 	}
 	return "", c.err
 }
@@ -165,17 +161,25 @@ func (c *CodecRequest) ReadRequest(args interface{}) error {
 		// Note: if c.request.Params is nil it's not an error, it's an optional member.
 		// JSON params structured object. Unmarshal to the args object.
 		if err := json.Unmarshal(*c.request.Params, args); err != nil {
-			// Clearly JSON params is not a structured object,
-			// fallback and attempt an unmarshal with JSON params as
-			// array value and RPC params is struct. Unmarshal into
-			// array containing the request struct.
-			params := StructToFieldPointer(args)
-			
+			// Clearly JSON params is not a structured object, let's try to
+			// turn the struct into a slice of its fields and parse again. This is
+			// to handle array params but re-mapped into the struct fields.
+			params := structFieldsToFieldsSlice(args)
+
 			if err = json.Unmarshal(*c.request.Params, &params); err != nil {
-				c.err = &Error{
-					Code:    E_INVALID_REQ,
-					Message: err.Error(),
-					Data:    c.request.Params,
+				// Clearly JSON params is not a structured object, and
+				// reducing fields to a single array did not work.
+				// Final fallback and attempt an unmarshal with JSON params as
+				// array value and RPC params is struct. Unmarshal into
+				// array containing the request struct.
+				params := [1]interface{}{args}
+
+				if err = json.Unmarshal(*c.request.Params, &params); err != nil {
+					c.err = &Error{
+						Code:    E_INVALID_REQ,
+						Message: err.Error(),
+						Data:    c.request.Params,
+					}
 				}
 			}
 		}
@@ -193,8 +197,8 @@ func (c *CodecRequest) WriteResponse(w http.ResponseWriter, reply interface{}) {
 	c.writeServerResponse(w, res)
 }
 
-func (c *CodecRequest) WriteError(w http.ResponseWriter, status int, err error) {
-	err = c.tryToMapIfNotAnErrorAlready(err)
+func (c *CodecRequest) WriteError(ctx context.Context, w http.ResponseWriter, status int, err error) {
+	err = c.tryToMapIfNotAnErrorAlready(ctx, err)
 	jsonErr, ok := err.(*Error)
 	if !ok {
 		jsonErr = &Error{
@@ -210,11 +214,20 @@ func (c *CodecRequest) WriteError(w http.ResponseWriter, status int, err error) 
 	c.writeServerResponse(w, res)
 }
 
-func (c CodecRequest) tryToMapIfNotAnErrorAlready(err error) error {
-	if _, ok := err.(*Error); ok || c.errorMapper == nil {
+func (c CodecRequest) tryToMapIfNotAnErrorAlready(ctx context.Context, err error) error {
+	if c.errorMapper == nil {
 		return err
 	}
-	return c.errorMapper(err)
+
+	if c.mapAllErrors {
+		return c.errorMapper(ctx, err)
+	}
+
+	if _, ok := err.(*Error); ok {
+		return err
+	}
+
+	return c.errorMapper(ctx, err)
 }
 
 func (c *CodecRequest) writeServerResponse(w http.ResponseWriter, res *serverResponse) {
