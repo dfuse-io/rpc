@@ -31,7 +31,7 @@ type Error struct {
 	Message string `json:"message"` /* required */
 
 	// A Primitive or Structured value that contains additional information about the error.
-	Data interface{} `json:"data"` /* optional */
+	Data interface{} `json:"data,omitempty"` /* optional */
 }
 
 func (e *Error) Error() string {
