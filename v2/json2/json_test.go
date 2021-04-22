@@ -229,7 +229,7 @@ func TestServiceWithErrorMapper(t *testing.T) {
 	}
 
 	s := rpc.NewServer()
-	s.RegisterCodec(NewCustomCodecWithErrorMapper(rpc.DefaultEncoderSelector, errorMapper, false), "application/json")
+	s.RegisterCodec(NewCustomCodec(WithErrorMapper(errorMapper)), "application/json")
 	s.RegisterService(new(Service1), "")
 
 	var res Service1Response

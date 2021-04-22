@@ -8,6 +8,7 @@ package json2
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 
 	"github.com/gorilla/rpc/v2"
@@ -15,6 +16,10 @@ import (
 
 var null = json.RawMessage([]byte("null"))
 var Version = "2.0"
+
+type JSONEncoder interface {
+	Encode(v interface{}) error
+}
 
 // ----------------------------------------------------------------------------
 // Request and Response
@@ -60,40 +65,83 @@ type serverResponse struct {
 // Codec
 // ----------------------------------------------------------------------------
 
-// NewCustomCodec returns a new JSON Codec based on passed encoder selector.
-func NewCustomCodec(encSel rpc.EncoderSelector) *Codec {
-	return &Codec{encSel: encSel}
+type options struct {
+	encoderSelector    rpc.EncoderSelector
+	jsonEncoderFactory func(w io.Writer) JSONEncoder
+	errorMapper        func(context.Context, error) error
+	mapAllErrors       bool
 }
 
-// NewCustomCodecWithErrorMapper returns a new JSON Codec based on the passed encoder selector
-// and also accepts an errorMapper function.
-// The errorMapper function will be called if the Service implementation returns an error, with that
-// error as a param, replacing it by the value returned by this function. This function is intended
-// to decouple your service implementation from the codec itself, making possible to return abstract
-// errors in your service, and then mapping them here to the JSON-RPC error codes.
-func NewCustomCodecWithErrorMapper(encSel rpc.EncoderSelector, errorMapper func(context.Context, error) error, mapAllErrors bool) *Codec {
-	return &Codec{
-		encSel:       encSel,
-		errorMapper:  errorMapper,
-		mapAllErrors: mapAllErrors,
+type Option interface {
+	apply(opts *options)
+}
+
+type optionFunc func(opts *options)
+
+func (f optionFunc) apply(opts *options) {
+	f(opts)
+}
+
+func WithEncoderSelector(encSel rpc.EncoderSelector) Option {
+	return optionFunc(func(opts *options) { opts.encoderSelector = encSel })
+}
+
+// WithErrorMapper defines an `errorMapper` function that will be called if the Service implementation
+// returns an error, with that error as a param, replacing it by the value returned by this function.
+// This function is intended to decouple your service implementation from the codec itself, making
+// possible to return abstract errors in your service, and then mapping them here to the JSON-RPC
+// error codes.
+func WithErrorMapper(mapper func(context.Context, error) error) Option {
+	return optionFunc(func(opts *options) { opts.errorMapper = mapper })
+}
+
+func MapAllErrors() Option {
+	return optionFunc(func(opts *options) { opts.mapAllErrors = true })
+}
+
+func WithJSONEncoderFactory(factory func(w io.Writer) JSONEncoder) Option {
+	return optionFunc(func(opts *options) { opts.jsonEncoderFactory = factory })
+}
+
+// NewCustomCodec returns a new JSON Codec based on passed encoder selector.
+func NewCustomCodec(opts ...Option) *Codec {
+	codec := &Codec{
+		options: options{
+			encoderSelector:    rpc.DefaultEncoderSelector,
+			jsonEncoderFactory: builtInJSONEncoderFactory,
+		},
 	}
+
+	for _, opt := range opts {
+		opt.apply(&codec.options)
+	}
+
+	return codec
+}
+
+func builtInJSONEncoderFactory(w io.Writer) JSONEncoder {
+	return json.NewEncoder(w)
 }
 
 // NewCodec returns a new JSON Codec.
 func NewCodec() *Codec {
-	return NewCustomCodec(rpc.DefaultEncoderSelector)
+	return NewCustomCodec()
 }
 
 // Codec creates a CodecRequest to process each request.
 type Codec struct {
-	encSel       rpc.EncoderSelector
-	errorMapper  func(context.Context, error) error
-	mapAllErrors bool
+	options
 }
 
 // NewRequest returns a CodecRequest.
 func (c *Codec) NewRequest(r *http.Request) rpc.CodecRequest {
-	return newCodecRequest(r, c.encSel.Select(r), c.errorMapper, c.mapAllErrors)
+	return newCodecRequest(
+		r,
+		c.encoderSelector.Select(r),
+		c.jsonEncoderFactory,
+		c.errorMapper,
+		c.mapAllErrors,
+	)
 }
 
 // ----------------------------------------------------------------------------
@@ -101,7 +149,13 @@ func (c *Codec) NewRequest(r *http.Request) rpc.CodecRequest {
 // ----------------------------------------------------------------------------
 
 // newCodecRequest returns a new CodecRequest.
-func newCodecRequest(r *http.Request, encoder rpc.Encoder, errorMapper func(context.Context, error) error, mapAllErrors bool) rpc.CodecRequest {
+func newCodecRequest(
+	r *http.Request,
+	encoder rpc.Encoder,
+	jsonEncoderFactory func(w io.Writer) JSONEncoder,
+	errorMapper func(context.Context, error) error,
+	mapAllErrors bool,
+) rpc.CodecRequest {
 	// Decode the request body and check if RPC method is valid.
 	req := new(serverRequest)
 	err := json.NewDecoder(r.Body).Decode(req)
@@ -121,16 +175,24 @@ func newCodecRequest(r *http.Request, encoder rpc.Encoder, errorMapper func(cont
 	}
 
 	r.Body.Close()
-	return &CodecRequest{request: req, err: err, encoder: encoder, errorMapper: errorMapper, mapAllErrors: mapAllErrors}
+	return &CodecRequest{
+		request:            req,
+		err:                err,
+		encoder:            encoder,
+		jsonEncoderFactory: jsonEncoderFactory,
+		errorMapper:        errorMapper,
+		mapAllErrors:       mapAllErrors,
+	}
 }
 
 // CodecRequest decodes and encodes a single request.
 type CodecRequest struct {
-	request      *serverRequest
-	err          error
-	encoder      rpc.Encoder
-	errorMapper  func(context.Context, error) error
-	mapAllErrors bool
+	request            *serverRequest
+	err                error
+	encoder            rpc.Encoder
+	jsonEncoderFactory func(w io.Writer) JSONEncoder
+	errorMapper        func(context.Context, error) error
+	mapAllErrors       bool
 }
 
 // Method returns the RPC method for the current request.
@@ -235,7 +297,7 @@ func (c *CodecRequest) writeServerResponse(w http.ResponseWriter, res *serverRes
 	// case we can't know whether it was intended to be a notification
 	if c.request.Id != nil || isParseErrorResponse(res) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		encoder := json.NewEncoder(c.encoder.Encode(w))
+		encoder := c.jsonEncoderFactory(c.encoder.Encode(w))
 		err := encoder.Encode(res)
 
 		// Not sure in which case will this happen. But seems harmless.
