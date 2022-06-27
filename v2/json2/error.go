@@ -7,9 +7,18 @@ package json2
 
 import (
 	"errors"
+	"strconv"
 )
 
 type ErrorCode int
+
+// MarshalJSON enforces how this `ErrorCode` type is going to be marshaled to JSON. Not striclty
+// required but if this pass through some speciazed json encoder that serialize uint64 differently,
+// they usually respect `MarshalJSON` being implemented for custom type so it will serialize according
+// to JSON-RPC rules.
+func (c ErrorCode) MarshalJSON() ([]byte, error) {
+	return []byte(strconv.FormatInt(int64(c), 10)), nil
+}
 
 const (
 	E_PARSE       ErrorCode = -32700
