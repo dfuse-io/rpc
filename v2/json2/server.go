@@ -8,6 +8,7 @@ package json2
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -226,7 +227,10 @@ func (c *CodecRequest) ReadRequest(args interface{}) error {
 			// Clearly JSON params is not a structured object, let's try to
 			// turn the struct into a slice of its fields and parse again. This is
 			// to handle array params but re-mapped into the struct fields.
-			params := structFieldsToFieldsSlice(args)
+			params, err := structFieldsToFieldsSlice(args)
+			if err != nil {
+				return fmt.Errorf("transforming struct fields to array of fields: %w", err)
+			}
 
 			if err = json.Unmarshal(*c.request.Params, &params); err != nil {
 				// Clearly JSON params is not a structured object, and
