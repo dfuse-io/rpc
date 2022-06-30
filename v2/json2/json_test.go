@@ -10,8 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -132,36 +130,7 @@ func execute(t *testing.T, s *rpc.Server, method string, req interface{}) ([]*cl
 	w := NewRecorder()
 	s.ServeHTTP(w, r)
 
-	return DecodeClientResponse(t, w.Body)
-}
-
-// DecodeClientResponse decodes the response body of a client request into
-// the interface reply.
-func DecodeClientResponse(t *testing.T, r io.Reader) ([]*clientResponse, error) {
-	t.Helper()
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, fmt.Errorf("reading response body: %w", err)
-	}
-	raw := json.RawMessage(data)
-	fmt.Println(string(raw))
-	c := &clientResponse{}
-	if !isBatch(raw) {
-		err = json.Unmarshal(data, &c)
-		if err != nil {
-			return nil, fmt.Errorf("decoding none batch response body: %w", err)
-		}
-
-		return []*clientResponse{c}, nil
-	}
-
-	var cr []*clientResponse
-	err = json.Unmarshal(data, &cr)
-	if err != nil {
-		return nil, fmt.Errorf("decoding batch response body: %w", err)
-	}
-
-	return cr, nil
+	return DecodeClientResponse(w.Body)
 }
 
 func executeRaw(t *testing.T, s *rpc.Server, req interface{}) ([]*clientResponse, error) {
@@ -172,7 +141,7 @@ func executeRaw(t *testing.T, s *rpc.Server, req interface{}) ([]*clientResponse
 	w := NewRecorder()
 	s.ServeHTTP(w, r)
 
-	return DecodeClientResponse(t, w.Body)
+	return DecodeClientResponse(w.Body)
 }
 
 func executeInvalidJSON(t *testing.T, s *rpc.Server) ([]*clientResponse, error) {
@@ -182,7 +151,7 @@ func executeInvalidJSON(t *testing.T, s *rpc.Server) ([]*clientResponse, error) 
 	w := NewRecorder()
 	s.ServeHTTP(w, r)
 
-	return DecodeClientResponse(t, w.Body)
+	return DecodeClientResponse(w.Body)
 }
 
 func TestService(t *testing.T) {

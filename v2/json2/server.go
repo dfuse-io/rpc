@@ -9,11 +9,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/gorilla/rpc/v2"
 	"io"
 	"io/ioutil"
 	"net/http"
-
-	"github.com/gorilla/rpc/v2"
 )
 
 var null = json.RawMessage([]byte("null"))
@@ -190,8 +189,8 @@ func newCodecRequest(
 	}
 }
 
-// isBatch returns true when the first non-whitespace characters is '['
-func isBatch(raw json.RawMessage) bool {
+// IsBatch returns true when the first non-whitespace characters is '['
+func IsBatch(raw json.RawMessage) bool {
 	for _, c := range raw {
 		// skip insignificant whitespace (http://www.ietf.org/rfc/rfc4627.txt)
 		if c == 0x20 || c == 0x09 || c == 0x0a || c == 0x0d {
@@ -210,7 +209,7 @@ func parseMessage(r *http.Request) ([]*serverRequest, bool, error) {
 	r.Body.Close()
 
 	raw := json.RawMessage(body)
-	if !isBatch(raw) {
+	if !IsBatch(raw) {
 		msgs := []*serverRequest{{}}
 		if err := json.Unmarshal(raw, &msgs[0]); err != nil {
 			return nil, false, fmt.Errorf("json unmarshal single request error: %v", err)
@@ -372,4 +371,32 @@ func isParseErrorResponse(res *serverResponse) bool {
 }
 
 type EmptyResponse struct {
+}
+
+// DecodeClientResponse decodes the response body of a client request into
+// the interface reply.
+func DecodeClientResponse(r io.Reader) ([]*clientResponse, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %w", err)
+	}
+	raw := json.RawMessage(data)
+	fmt.Println(string(raw))
+	c := &clientResponse{}
+	if !IsBatch(raw) {
+		err = json.Unmarshal(data, &c)
+		if err != nil {
+			return nil, fmt.Errorf("decoding none batch response body: %w", err)
+		}
+
+		return []*clientResponse{c}, nil
+	}
+
+	var cr []*clientResponse
+	err = json.Unmarshal(data, &cr)
+	if err != nil {
+		return nil, fmt.Errorf("decoding batch response body: %w", err)
+	}
+
+	return cr, nil
 }
