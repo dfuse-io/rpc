@@ -93,10 +93,14 @@ type CodecRequest struct {
 	err     error
 }
 
+func (c *CodecRequest) RequestCount() int {
+	return 1
+}
+
 // Method returns the RPC method for the current request.
 //
 // The method uses a dotted notation as in "Service.Method".
-func (c *CodecRequest) Method() (string, error) {
+func (c *CodecRequest) Method(reqIdx int) (string, error) {
 	if c.err == nil {
 		return c.request.Method, nil
 	}
@@ -104,7 +108,7 @@ func (c *CodecRequest) Method() (string, error) {
 }
 
 // ReadRequest fills the request object for the RPC method.
-func (c *CodecRequest) ReadRequest(args interface{}) error {
+func (c *CodecRequest) ReadRequest(reqIdx int, args interface{}) error {
 	if c.err == nil {
 		if c.request.Params != nil {
 			c.err = json.Unmarshal(*c.request.Params, args)
@@ -116,7 +120,7 @@ func (c *CodecRequest) ReadRequest(args interface{}) error {
 }
 
 // WriteResponse encodes the response and writes it to the ResponseWriter.
-func (c *CodecRequest) WriteResponse(w http.ResponseWriter, reply interface{}) {
+func (c *CodecRequest) WriteResponse(reqIdx int, w http.ResponseWriter, reply interface{}) {
 	res := &serverResponse{
 		Result: reply,
 		Error:  &null,
@@ -125,7 +129,7 @@ func (c *CodecRequest) WriteResponse(w http.ResponseWriter, reply interface{}) {
 	c.writeServerResponse(w, 200, res)
 }
 
-func (c *CodecRequest) WriteError(ctx context.Context, w http.ResponseWriter, status int, err error) {
+func (c *CodecRequest) WriteError(ctx context.Context, reqIdx int, w http.ResponseWriter, status int, err error) {
 	res := &serverResponse{
 		Result: &struct {
 			ErrorMessage interface{} `json:"error_message"`

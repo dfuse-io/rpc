@@ -69,22 +69,26 @@ type MockCodecRequest struct {
 	A, B int
 }
 
-func (r MockCodecRequest) Method() (string, error) {
+func (r MockCodecRequest) RequestCount() int {
+	return 1
+}
+
+func (r MockCodecRequest) Method(reqIdx int) (string, error) {
 	return "Service1.Multiply", nil
 }
 
-func (r MockCodecRequest) ReadRequest(args interface{}) error {
+func (r MockCodecRequest) ReadRequest(reqIdx int, args interface{}) error {
 	req := args.(*Service1Request)
 	req.A, req.B = r.A, r.B
 	return nil
 }
 
-func (r MockCodecRequest) WriteResponse(w http.ResponseWriter, reply interface{}) {
+func (r MockCodecRequest) WriteResponse(reqIdx int, w http.ResponseWriter, reply interface{}) {
 	res := reply.(*Service1Response)
 	w.Write([]byte(strconv.Itoa(res.Result)))
 }
 
-func (r MockCodecRequest) WriteError(ctx context.Context, w http.ResponseWriter, status int, err error) {
+func (r MockCodecRequest) WriteError(ctx context.Context, reqIdx int, w http.ResponseWriter, status int, err error) {
 	w.WriteHeader(status)
 	w.Write([]byte(err.Error()))
 }
