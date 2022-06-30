@@ -381,7 +381,6 @@ func DecodeClientResponse(r io.Reader) ([]*clientResponse, error) {
 		return nil, fmt.Errorf("reading response body: %w", err)
 	}
 	raw := json.RawMessage(data)
-	fmt.Println(string(raw))
 	c := &clientResponse{}
 	if !IsBatch(raw) {
 		err = json.Unmarshal(data, &c)
