@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/gorilla/rpc/v2"
+	"github.com/tidwall/gjson"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -191,7 +192,7 @@ func newCodecRequest(
 
 // IsBatch returns true when the first non-whitespace characters is '['
 func IsBatch(raw json.RawMessage) bool {
-	return gjson.ParseBytes([]byte(raw)).IsArray()
+	return gjson.ParseBytes(raw).IsArray()
 } // CodecRequest decodes and encodes a single request.
 
 func parseMessage(r *http.Request) ([]*serverRequest, bool, error) {
