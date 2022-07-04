@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/gorilla/rpc/v2"
+	"github.com/stretchr/testify/require"
 )
 
 // ResponseRecorder is an implementation of http.ResponseWriter that
@@ -116,7 +117,7 @@ func (t *Service1) MappedResponseError(r *http.Request, req *Service1Request, re
 	return ErrMappedResponseError
 }
 
-func execute(t *testing.T, s *rpc.Server, method string, req, res interface{}) error {
+func execute(t *testing.T, s *rpc.Server, method string, req interface{}) ([]*clientResponse, error) {
 	if !s.HasMethod(method) {
 		t.Fatal("Expected to be registered:", method)
 	}
@@ -129,10 +130,10 @@ func execute(t *testing.T, s *rpc.Server, method string, req, res interface{}) e
 	w := NewRecorder()
 	s.ServeHTTP(w, r)
 
-	return DecodeClientResponse(w.Body, res)
+	return DecodeClientResponse(w.Body)
 }
 
-func executeRaw(t *testing.T, s *rpc.Server, req interface{}, res interface{}) error {
+func executeRaw(t *testing.T, s *rpc.Server, req interface{}) ([]*clientResponse, error) {
 	j, _ := json.Marshal(req)
 	r, _ := http.NewRequest("POST", "http://localhost:8080/", bytes.NewBuffer(j))
 	r.Header.Set("Content-Type", "application/json")
@@ -140,17 +141,17 @@ func executeRaw(t *testing.T, s *rpc.Server, req interface{}, res interface{}) e
 	w := NewRecorder()
 	s.ServeHTTP(w, r)
 
-	return DecodeClientResponse(w.Body, res)
+	return DecodeClientResponse(w.Body)
 }
 
-func executeInvalidJSON(t *testing.T, s *rpc.Server, res interface{}) error {
+func executeInvalidJSON(t *testing.T, s *rpc.Server) ([]*clientResponse, error) {
 	r, _ := http.NewRequest("POST", "http://localhost:8080/", strings.NewReader(`not even a json`))
 	r.Header.Set("Content-Type", "application/json")
 
 	w := NewRecorder()
 	s.ServeHTTP(w, r)
 
-	return DecodeClientResponse(w.Body, res)
+	return DecodeClientResponse(w.Body)
 }
 
 func TestService(t *testing.T) {
@@ -159,24 +160,25 @@ func TestService(t *testing.T) {
 	s.RegisterService(new(Service1), "")
 
 	var res Service1Response
-	if err := execute(t, s, "Service1.Multiply", &Service1Request{4, 2}, &res); err != nil {
-		t.Error("Expected err to be nil, but got:", err)
-	}
-	if res.Result != 8 {
-		t.Errorf("Wrong response: %v.", res.Result)
-	}
+	cr, err := execute(t, s, "Service1.Multiply", &Service1Request{4, 2})
+	require.NoError(t, err)
+	require.Nil(t, cr[0].Error)
 
-	if err := execute(t, s, "Service1.ResponseError", &Service1Request{4, 2}, &res); err == nil {
-		t.Errorf("Expected to get %q, but got nil", ErrResponseError)
-	} else if err.Error() != ErrResponseError.Error() {
-		t.Errorf("Expected to get %q, but got %q", ErrResponseError, err)
-	}
+	err = json.Unmarshal(*cr[0].Result, &res)
+	require.NoError(t, err)
+	require.Equal(t, 8, res.Result)
 
+	cr, err = execute(t, s, "Service1.ResponseError", &Service1Request{4, 2})
+	require.NoError(t, err)
+	require.NotNil(t, cr[0].Error)
+
+	cr, err = executeRaw(t, s, &Service1NoParamsRequest{"2.0", "Service1.Multiply", 1})
+	require.NoError(t, err)
 	// No parameters.
 	res = Service1Response{}
-	if err := executeRaw(t, s, &Service1NoParamsRequest{"2.0", "Service1.Multiply", 1}, &res); err != nil {
-		t.Error(err)
-	}
+	err = json.Unmarshal(*cr[0].Result, &res)
+	require.NoError(t, err)
+
 	if res.Result != Service1DefaultResponse {
 		t.Errorf("Wrong response: got %v, want %v", res.Result, Service1DefaultResponse)
 	}
@@ -193,21 +195,62 @@ func TestService(t *testing.T) {
 		M:  "Service1.Multiply",
 		ID: 1,
 	}
-	if err := executeRaw(t, s, &req, &res); err != nil {
-		t.Error(err)
-	}
-	if res.Result != Service1DefaultResponse {
-		t.Errorf("Wrong response: got %v, want %v", res.Result, Service1DefaultResponse)
+	cr, err = executeRaw(t, s, &req)
+	require.NoError(t, err)
+
+	err = json.Unmarshal(*cr[0].Result, &res)
+	require.NoError(t, err)
+	require.Equal(t, Service1DefaultResponse, res.Result)
+
+	res = Service1Response{}
+	cr, err = executeInvalidJSON(t, s)
+	require.NoError(t, err)
+	jsonRpcErr := &Error{}
+	err = json.Unmarshal(*cr[0].Error, &jsonRpcErr)
+	require.NoError(t, err)
+	require.Equal(t, E_PARSE, jsonRpcErr.Code)
+}
+
+func TestServiceBatch(t *testing.T) {
+	s := rpc.NewServer()
+	s.RegisterCodec(NewCodec(), "application/json")
+	s.RegisterService(new(Service1), "")
+
+	res := Service1Response{}
+	req := []*Service1ParamsArrayRequest{
+		{
+			V: "2.0",
+			P: []struct {
+				T string
+			}{{
+				T: "test",
+			}},
+			M:  "Service1.Multiply",
+			ID: 1,
+		}, {
+			V: "2.0",
+			P: []struct {
+				T string
+			}{{
+				T: "test",
+			}},
+			M:  "Service1.Multiply",
+			ID: 2,
+		},
 	}
 
 	res = Service1Response{}
-	if err := executeInvalidJSON(t, s, &res); err == nil {
-		t.Error("Expected to receive an E_PARSE error, but got nil")
-	} else if jsonRpcErr, ok := err.(*Error); !ok {
-		t.Errorf("Expected to receive an Error, but got %T: %s", err, err)
-	} else if jsonRpcErr.Code != E_PARSE {
-		t.Errorf("Expected to receive an E_PARSE JSON-RPC error (%d) but got %d", E_PARSE, jsonRpcErr.Code)
-	}
+
+	cr, err := executeRaw(t, s, &req)
+	require.NoError(t, err)
+
+	err = json.Unmarshal(*cr[0].Result, &res)
+	require.NoError(t, err)
+	require.Equal(t, Service1DefaultResponse, res.Result)
+
+	err = json.Unmarshal(*cr[1].Result, &res)
+	require.NoError(t, err)
+	require.Equal(t, Service1DefaultResponse, res.Result)
 }
 
 func TestServiceWithErrorMapper(t *testing.T) {
@@ -232,27 +275,23 @@ func TestServiceWithErrorMapper(t *testing.T) {
 	s.RegisterCodec(NewCustomCodec(WithErrorMapper(errorMapper)), "application/json")
 	s.RegisterService(new(Service1), "")
 
-	var res Service1Response
-	if err := execute(t, s, "Service1.MappedResponseError", &Service1Request{4, 2}, &res); err == nil {
-		t.Errorf("Expected to get a JSON-RPC error, but got nil")
-	} else if jsonRpcErr, ok := err.(*Error); !ok {
-		t.Errorf("Expected to get an *Error, but got %T: %s", err, err)
-	} else if jsonRpcErr.Code != mappedErrorCode {
-		t.Errorf("Expected to get Code %d, but got %d", mappedErrorCode, jsonRpcErr.Code)
-	} else if jsonRpcErr.Message != ErrMappedResponseError.Error() {
-		t.Errorf("Expected to get Message %q, but got %q", ErrMappedResponseError.Error(), jsonRpcErr.Message)
-	}
+	//var res Service1Response
+	jsonRpcErr := &Error{}
+	cr, err := execute(t, s, "Service1.MappedResponseError", &Service1Request{4, 2})
+	require.NoError(t, err)
+	err = json.Unmarshal(*cr[0].Error, &jsonRpcErr)
+	require.NoError(t, err)
+
+	require.Equal(t, ErrorCode(mappedErrorCode), jsonRpcErr.Code)
+	require.Equal(t, ErrMappedResponseError.Error(), jsonRpcErr.Message)
 
 	// Unmapped error behaves as usual
-	if err := execute(t, s, "Service1.ResponseError", &Service1Request{4, 2}, &res); err == nil {
-		t.Errorf("Expected to get a JSON-RPC error, but got nil")
-	} else if jsonRpcErr, ok := err.(*Error); !ok {
-		t.Errorf("Expected to get an *Error, but got %T: %s", err, err)
-	} else if jsonRpcErr.Code != E_SERVER {
-		t.Errorf("Expected to get Code %d, but got %d", E_SERVER, jsonRpcErr.Code)
-	} else if jsonRpcErr.Message != ErrResponseError.Error() {
-		t.Errorf("Expected to get Message %q, but got %q", ErrResponseError.Error(), jsonRpcErr.Message)
-	}
+	cr, err = execute(t, s, "Service1.ResponseError", &Service1Request{4, 2})
+	require.NoError(t, err)
+
+	err = json.Unmarshal(*cr[0].Error, &jsonRpcErr)
+	require.Equal(t, E_SERVER, jsonRpcErr.Code)
+	require.Equal(t, ErrResponseError.Error(), jsonRpcErr.Message)
 
 	// Malformed request without method: our framework tries to return an error: we shouldn't map that one
 	malformedRequest := struct {
@@ -262,27 +301,6 @@ func TestServiceWithErrorMapper(t *testing.T) {
 		V:  "3.0",
 		ID: "any",
 	}
-	if err := executeRaw(t, s, &malformedRequest, &res); err == nil {
-		t.Errorf("Expected to get a JSON-RPC error, but got nil")
-	} else if jsonRpcErr, ok := err.(*Error); !ok {
-		t.Errorf("Expected to get an *Error, but got %T: %s", err, err)
-	} else if jsonRpcErr.Code != E_INVALID_REQ {
-		t.Errorf("Expected to get an E_INVALID_REQ error (%d), but got %d", E_INVALID_REQ, jsonRpcErr.Code)
-	}
-}
-
-func TestDecodeNullResult(t *testing.T) {
-	data := `{"jsonrpc": "2.0", "id": 12345, "result": null}`
-	reader := bytes.NewReader([]byte(data))
-	var result interface{}
-
-	err := DecodeClientResponse(reader, &result)
-
-	if err != ErrNullResult {
-		t.Error("Expected err no be ErrNullResult, but got:", err)
-	}
-
-	if result != nil {
-		t.Error("Expected result to be nil, but got:", result)
-	}
+	cr, err = executeRaw(t, s, &malformedRequest)
+	require.NoError(t, err)
 }

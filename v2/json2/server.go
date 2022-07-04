@@ -9,10 +9,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-
 	"github.com/gorilla/rpc/v2"
+	"github.com/tidwall/gjson"
+	"io"
+	"io/ioutil"
+	"net/http"
 )
 
 var null = json.RawMessage([]byte("null"))
@@ -157,27 +158,30 @@ func newCodecRequest(
 	errorMapper func(context.Context, error) error,
 	mapAllErrors bool,
 ) rpc.CodecRequest {
-	// Decode the request body and check if RPC method is valid.
-	req := new(serverRequest)
-	err := json.NewDecoder(r.Body).Decode(req)
 
+	requests, isBatch, err := parseMessage(r)
 	if err != nil {
 		err = &Error{
 			Code:    E_PARSE,
 			Message: err.Error(),
-			Data:    req,
 		}
-	} else if req.Version != Version {
-		err = &Error{
-			Code:    E_INVALID_REQ,
-			Message: "jsonrpc must be " + Version,
-			Data:    req,
+		requests = []*serverRequest{{}} //dump requests to make sure that method will called
+	} else {
+		for _, req := range requests {
+			if req.Version != Version {
+				err = &Error{
+					Code:    E_INVALID_REQ,
+					Message: "jsonrpc must be " + Version,
+					Data:    req,
+				}
+				break
+			}
 		}
 	}
 
-	r.Body.Close()
 	return &CodecRequest{
-		request:            req,
+		requests:           requests,
+		isBatch:            isBatch,
 		err:                err,
 		encoder:            encoder,
 		jsonEncoderFactory: jsonEncoderFactory,
@@ -186,22 +190,56 @@ func newCodecRequest(
 	}
 }
 
+// IsBatch returns true when the first non-whitespace characters is '['
+func IsBatch(raw json.RawMessage) bool {
+	return gjson.ParseBytes(raw).IsArray()
+} // CodecRequest decodes and encodes a single request.
+
+func parseMessage(r *http.Request) ([]*serverRequest, bool, error) {
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		return nil, false, fmt.Errorf("reading request body: %w", err)
+	}
+	r.Body.Close()
+
+	raw := json.RawMessage(body)
+	if !IsBatch(raw) {
+		msgs := []*serverRequest{{}}
+		if err := json.Unmarshal(raw, &msgs[0]); err != nil {
+			return nil, false, fmt.Errorf("json unmarshal single request error: %v", err)
+		}
+		return msgs, false, nil
+	}
+
+	var msgs []*serverRequest
+	if err := json.Unmarshal(raw, &msgs); err != nil {
+		return nil, false, fmt.Errorf("json unmarshal batch request error: %v", err)
+	}
+	return msgs, true, nil
+}
+
 // CodecRequest decodes and encodes a single request.
 type CodecRequest struct {
-	request            *serverRequest
+	requests           []*serverRequest
+	isBatch            bool
 	err                error
 	encoder            rpc.Encoder
 	jsonEncoderFactory func(w io.Writer) JSONEncoder
 	errorMapper        func(context.Context, error) error
 	mapAllErrors       bool
+	batchResponses     []*serverResponse
+}
+
+func (c *CodecRequest) RequestCount() int {
+	return len(c.requests)
 }
 
 // Method returns the RPC method for the current request.
 //
 // The method uses a dotted notation as in "Service.Method".
-func (c *CodecRequest) Method() (string, error) {
+func (c *CodecRequest) Method(reqIdx int) (string, error) {
 	if c.err == nil {
-		return c.request.Method, nil
+		return c.requests[reqIdx].Method, nil
 	}
 	return "", c.err
 }
@@ -219,11 +257,12 @@ func (c *CodecRequest) Method() (string, error) {
 // absence of expected names MAY result in an error being
 // generated. The names MUST match exactly, including
 // case, to the method's expected parameters.
-func (c *CodecRequest) ReadRequest(args interface{}) error {
-	if c.err == nil && c.request.Params != nil {
+func (c *CodecRequest) ReadRequest(reqIdx int, args interface{}) error {
+	request := c.requests[reqIdx]
+	if c.err == nil && request.Params != nil {
 		// Note: if c.request.Params is nil it's not an error, it's an optional member.
 		// JSON params structured object. Unmarshal to the args object.
-		if err := json.Unmarshal(*c.request.Params, args); err != nil {
+		if err := json.Unmarshal(*request.Params, args); err != nil {
 			// Clearly JSON params is not a structured object, let's try to
 			// turn the struct into a slice of its fields and parse again. This is
 			// to handle array params but re-mapped into the struct fields.
@@ -232,7 +271,7 @@ func (c *CodecRequest) ReadRequest(args interface{}) error {
 				return fmt.Errorf("transforming struct fields to array of fields: %w", err)
 			}
 
-			if err = json.Unmarshal(*c.request.Params, &params); err != nil {
+			if err = json.Unmarshal(*request.Params, &params); err != nil {
 				// Clearly JSON params is not a structured object, and
 				// reducing fields to a single array did not work.
 				// Final fallback and attempt an unmarshal with JSON params as
@@ -240,11 +279,11 @@ func (c *CodecRequest) ReadRequest(args interface{}) error {
 				// array containing the request struct.
 				params := [1]interface{}{args}
 
-				if err = json.Unmarshal(*c.request.Params, &params); err != nil {
+				if err = json.Unmarshal(*request.Params, &params); err != nil {
 					c.err = &Error{
 						Code:    E_INVALID_REQ,
 						Message: err.Error(),
-						Data:    c.request.Params,
+						Data:    request.Params,
 					}
 				}
 			}
@@ -254,16 +293,16 @@ func (c *CodecRequest) ReadRequest(args interface{}) error {
 }
 
 // WriteResponse encodes the response and writes it to the ResponseWriter.
-func (c *CodecRequest) WriteResponse(w http.ResponseWriter, reply interface{}) {
+func (c *CodecRequest) WriteResponse(reqIdx int, w http.ResponseWriter, reply interface{}) {
 	res := &serverResponse{
 		Version: Version,
 		Result:  reply,
-		Id:      c.request.Id,
+		Id:      c.requests[reqIdx].Id,
 	}
-	c.writeServerResponse(w, res)
+	c.writeServerResponse(reqIdx, w, res)
 }
 
-func (c *CodecRequest) WriteError(ctx context.Context, w http.ResponseWriter, status int, err error) {
+func (c *CodecRequest) WriteError(ctx context.Context, reqIdx int, w http.ResponseWriter, status int, err error) {
 	err = c.tryToMapIfNotAnErrorAlready(ctx, err)
 	jsonErr, ok := err.(*Error)
 	if !ok {
@@ -275,9 +314,9 @@ func (c *CodecRequest) WriteError(ctx context.Context, w http.ResponseWriter, st
 	res := &serverResponse{
 		Version: Version,
 		Error:   jsonErr,
-		Id:      c.request.Id,
+		Id:      c.requests[reqIdx].Id,
 	}
-	c.writeServerResponse(w, res)
+	c.writeServerResponse(reqIdx, w, res)
 }
 
 func (c CodecRequest) tryToMapIfNotAnErrorAlready(ctx context.Context, err error) error {
@@ -296,13 +335,23 @@ func (c CodecRequest) tryToMapIfNotAnErrorAlready(ctx context.Context, err error
 	return c.errorMapper(ctx, err)
 }
 
-func (c *CodecRequest) writeServerResponse(w http.ResponseWriter, res *serverResponse) {
+func (c *CodecRequest) writeServerResponse(reqIdx int, w http.ResponseWriter, res *serverResponse) {
+	var out interface{} = res
+	if c.isBatch {
+		c.batchResponses = append(c.batchResponses, res)
+		batchCompleted := reqIdx == len(c.requests)-1
+		if !batchCompleted {
+			return
+		}
+		out = c.batchResponses
+	}
+
 	// Id is null for notifications and they don't have a response, unless we couldn't even parse the JSON, in that
 	// case we can't know whether it was intended to be a notification
-	if c.request.Id != nil || isParseErrorResponse(res) {
+	if c.requests[reqIdx].Id != nil || isParseErrorResponse(res) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		encoder := c.jsonEncoderFactory(c.encoder.Encode(w))
-		err := encoder.Encode(res)
+		err := encoder.Encode(out)
 
 		// Not sure in which case will this happen. But seems harmless.
 		if err != nil {
@@ -316,4 +365,31 @@ func isParseErrorResponse(res *serverResponse) bool {
 }
 
 type EmptyResponse struct {
+}
+
+// DecodeClientResponse decodes the response body of a client request into
+// the interface reply.
+func DecodeClientResponse(r io.Reader) ([]*clientResponse, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %w", err)
+	}
+	raw := json.RawMessage(data)
+	c := &clientResponse{}
+	if !IsBatch(raw) {
+		err = json.Unmarshal(data, &c)
+		if err != nil {
+			return nil, fmt.Errorf("decoding none batch response body: %w", err)
+		}
+
+		return []*clientResponse{c}, nil
+	}
+
+	var cr []*clientResponse
+	err = json.Unmarshal(data, &cr)
+	if err != nil {
+		return nil, fmt.Errorf("decoding batch response body: %w", err)
+	}
+
+	return cr, nil
 }

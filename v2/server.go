@@ -30,13 +30,15 @@ type Codec interface {
 // serialization scheme.
 type CodecRequest interface {
 	// Reads the request and returns the RPC method name.
-	Method() (string, error)
+	Method(int) (string, error)
 	// Reads the request filling the RPC method args.
-	ReadRequest(interface{}) error
+	ReadRequest(int, interface{}) error
 	// Writes the response using the RPC method reply.
-	WriteResponse(http.ResponseWriter, interface{})
+	WriteResponse(int, http.ResponseWriter, interface{})
 	// Writes an error produced by the server.
-	WriteError(ctx context.Context, w http.ResponseWriter, status int, err error)
+	WriteError(ctx context.Context, reqID int, w http.ResponseWriter, status int, err error)
+
+	RequestCount() int
 }
 
 // ----------------------------------------------------------------------------
@@ -170,92 +172,95 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Create a new codec request.
 	codecReq := codec.NewRequest(r)
-	// Get service method to be called.
-	method, errMethod := codecReq.Method()
-	if errMethod != nil {
-		codecReq.WriteError(r.Context(), w, http.StatusBadRequest, errMethod)
-		return
-	}
-	serviceSpec, methodSpec, errGet := s.services.get(method)
-	if errGet != nil {
-		codecReq.WriteError(r.Context(), w, http.StatusBadRequest, errGet)
-		return
-	}
-	// Decode the args.
-	args := reflect.New(methodSpec.argsType)
-	if errRead := codecReq.ReadRequest(args.Interface()); errRead != nil {
-		codecReq.WriteError(r.Context(), w, http.StatusBadRequest, errRead)
-		return
-	}
 
-	// Call the registered Intercept Function
-	if s.interceptFunc != nil {
-		req := s.interceptFunc(&RequestInfo{
+	for idx := 0; idx < codecReq.RequestCount(); idx++ {
+		// Get service method to be called.
+		method, errMethod := codecReq.Method(idx)
+		if errMethod != nil {
+			codecReq.WriteError(r.Context(), idx, w, http.StatusBadRequest, errMethod)
+			return
+		}
+		serviceSpec, methodSpec, errGet := s.services.get(method)
+		if errGet != nil {
+			codecReq.WriteError(r.Context(), idx, w, http.StatusBadRequest, errGet)
+			return
+		}
+		// Decode the args.
+		args := reflect.New(methodSpec.argsType)
+		if errRead := codecReq.ReadRequest(idx, args.Interface()); errRead != nil {
+			codecReq.WriteError(r.Context(), idx, w, http.StatusBadRequest, errRead)
+			return
+		}
+
+		// Call the registered Intercept Function
+		if s.interceptFunc != nil {
+			req := s.interceptFunc(&RequestInfo{
+				Request: r,
+				Method:  method,
+			})
+			if req != nil {
+				r = req
+			}
+		}
+
+		requestInfo := &RequestInfo{
 			Request: r,
 			Method:  method,
-		})
-		if req != nil {
-			r = req
 		}
-	}
 
-	requestInfo := &RequestInfo{
-		Request: r,
-		Method:  method,
-	}
+		// Call the registered Before Function
+		if s.beforeFunc != nil {
+			s.beforeFunc(requestInfo, args.Interface())
+		}
 
-	// Call the registered Before Function
-	if s.beforeFunc != nil {
-		s.beforeFunc(requestInfo, args.Interface())
-	}
+		// Prepare the reply, we need it even if validation fails
+		reply := reflect.New(methodSpec.replyType)
+		errValue := []reflect.Value{nilErrorValue}
 
-	// Prepare the reply, we need it even if validation fails
-	reply := reflect.New(methodSpec.replyType)
-	errValue := []reflect.Value{nilErrorValue}
+		// Call the registered Validator Function
+		if s.validateFunc.IsValid() {
+			errValue = s.validateFunc.Call([]reflect.Value{reflect.ValueOf(requestInfo), args})
+		}
 
-	// Call the registered Validator Function
-	if s.validateFunc.IsValid() {
-		errValue = s.validateFunc.Call([]reflect.Value{reflect.ValueOf(requestInfo), args})
-	}
+		// If still no errors after validation, call the method
+		if errValue[0].IsNil() {
+			errValue = methodSpec.method.Func.Call([]reflect.Value{
+				serviceSpec.rcvr,
+				reflect.ValueOf(r),
+				args,
+				reply,
+			})
+		}
 
-	// If still no errors after validation, call the method
-	if errValue[0].IsNil() {
-		errValue = methodSpec.method.Func.Call([]reflect.Value{
-			serviceSpec.rcvr,
-			reflect.ValueOf(r),
-			args,
-			reply,
-		})
-	}
+		// Extract the result to error if needed.
+		var errResult error
+		statusCode := http.StatusOK
+		errInter := errValue[0].Interface()
+		if errInter != nil {
+			statusCode = http.StatusBadRequest
+			errResult = errInter.(error)
+		}
 
-	// Extract the result to error if needed.
-	var errResult error
-	statusCode := http.StatusOK
-	errInter := errValue[0].Interface()
-	if errInter != nil {
-		statusCode = http.StatusBadRequest
-		errResult = errInter.(error)
-	}
+		// Prevents Internet Explorer from MIME-sniffing a response away
+		// from the declared content-type
+		w.Header().Set("x-content-type-options", "nosniff")
 
-	// Prevents Internet Explorer from MIME-sniffing a response away
-	// from the declared content-type
-	w.Header().Set("x-content-type-options", "nosniff")
+		// Encode the response.
+		if errResult == nil {
+			codecReq.WriteResponse(idx, w, reply.Interface())
+		} else {
+			codecReq.WriteError(r.Context(), idx, w, statusCode, errResult)
+		}
 
-	// Encode the response.
-	if errResult == nil {
-		codecReq.WriteResponse(w, reply.Interface())
-	} else {
-		codecReq.WriteError(r.Context(), w, statusCode, errResult)
-	}
-
-	// Call the registered After Function
-	if s.afterFunc != nil {
-		s.afterFunc(&RequestInfo{
-			Request:    r,
-			Method:     method,
-			Error:      errResult,
-			StatusCode: statusCode,
-		})
+		// Call the registered After Function
+		if s.afterFunc != nil {
+			s.afterFunc(&RequestInfo{
+				Request:    r,
+				Method:     method,
+				Error:      errResult,
+				StatusCode: statusCode,
+			})
+		}
 	}
 }
 

@@ -7,7 +7,6 @@ package json2
 
 import (
 	"encoding/json"
-	"io"
 	"math/rand"
 )
 
@@ -47,29 +46,4 @@ func EncodeClientRequest(method string, args interface{}) ([]byte, error) {
 		Id:      uint64(rand.Int63()),
 	}
 	return json.Marshal(c)
-}
-
-// DecodeClientResponse decodes the response body of a client request into
-// the interface reply.
-func DecodeClientResponse(r io.Reader, reply interface{}) error {
-	var c clientResponse
-	if err := json.NewDecoder(r).Decode(&c); err != nil {
-		return err
-	}
-	if c.Error != nil {
-		jsonErr := &Error{}
-		if err := json.Unmarshal(*c.Error, jsonErr); err != nil {
-			return &Error{
-				Code:    E_SERVER,
-				Message: string(*c.Error),
-			}
-		}
-		return jsonErr
-	}
-
-	if c.Result == nil {
-		return ErrNullResult
-	}
-
-	return json.Unmarshal(*c.Result, reply)
 }
